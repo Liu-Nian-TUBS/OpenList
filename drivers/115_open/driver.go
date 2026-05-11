@@ -30,6 +30,11 @@ type Open115 struct {
 	parentPath string
 }
 
+// GetClient returns the underlying 115 SDK client for use by other drivers.
+func (d *Open115) GetClient() *sdk.Client {
+	return d.client
+}
+
 func (d *Open115) Config() driver.Config {
 	return config
 }
