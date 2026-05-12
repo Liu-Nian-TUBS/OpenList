@@ -238,11 +238,15 @@ type videoPlayRawResp struct {
 
 func videoPlayRaw(ctx context.Context, client *sdk.Client, pickCode string) (*sdk.VideoPlayResp, error) {
 	var raw videoPlayRawResp
-	_, err := client.AuthRequest(ctx, sdk.ApiVideoPlay, http.MethodGet, &raw, sdk.ReqWithQuery(sdk.Form{
+	resp, err := client.AuthRequest(ctx, sdk.ApiVideoPlay, http.MethodGet, &raw, sdk.ReqWithQuery(sdk.Form{
 		"pick_code": pickCode,
 	}))
 	if err != nil {
 		return nil, err
+	}
+	// Extra safety: check if raw response contains error indicators not caught by SDK
+	if resp != nil && raw.FileID == "" && raw.FileName == "" && len(raw.VideoURL) == 0 {
+		return nil, fmt.Errorf("empty VideoPlay response (possible silent error), raw=%s", resp.String())
 	}
 	fileSize, _ := raw.FileSize.Int64()
 	duration, _ := raw.Duration.Int64()
