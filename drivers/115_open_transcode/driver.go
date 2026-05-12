@@ -150,9 +150,9 @@ func (d *Open115Transcode) Link(ctx context.Context, file model.Obj, args model.
 		return d.directSourceLink(ctx, storage, actualPath, args)
 	}
 
-	// Pick highest quality (last entry in video_url list)
+	// Pick highest quality (last entry, 115 returns low→high order)
 	bestIdx := len(playResp.VideoURL) - 1
-	log.Printf("[115_open_transcode] VideoPlay success %s pc=%s defs=%d using=%s", name, pc, len(playResp.VideoURL), playResp.VideoURL[bestIdx].Title)
+	log.Printf("[115_open_transcode] VideoPlay success %s pc=%s defs=%d using=def%d", name, pc, len(playResp.VideoURL), playResp.VideoURL[bestIdx].Definition)
 	return &model.Link{
 		URL: playResp.VideoURL[bestIdx].URL,
 		Header: http.Header{
