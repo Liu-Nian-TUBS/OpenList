@@ -1,164 +1,60 @@
-<div align="center">
-  <img src="https://raw.githubusercontent.com/OpenListTeam/Logo/main/logo.svg" width="128" height="128" alt="logo" />
+# OpenList Fork — Liu-Nian-TUBS/OpenList
 
-  <p><em>OpenList is a resilient, long-term governance, community-driven fork of AList — built to defend open source against trust-based attacks.</em></p>
+基于 [OpenListTeam/OpenList](https://github.com/OpenListTeam/OpenList) 上游的 fork，添加了 **115 Open Transcode** 驱动。
 
-  <img src="https://goreportcard.com/badge/github.com/OpenListTeam/OpenList/v3" alt="latest version" />
-  <a href="https://github.com/OpenListTeam/OpenList/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OpenListTeam/OpenList" alt="License" /></a>
-  <a href="https://github.com/OpenListTeam/OpenList/actions?query=workflow%3ABuild"><img src="https://img.shields.io/github/actions/workflow/status/OpenListTeam/OpenList/build.yml?branch=main" alt="Build status" /></a>
-  <a href="https://github.com/OpenListTeam/OpenList/releases"><img src="https://img.shields.io/github/release/OpenListTeam/OpenList" alt="latest version" /></a>
+## 相对上游的全部改动
 
-  <a href="https://github.com/OpenListTeam/OpenList/discussions"><img src="https://img.shields.io/github/discussions/OpenListTeam/OpenList?color=%23ED8936" alt="discussions" /></a>
-  <a href="https://github.com/OpenListTeam/OpenList/releases"><img src="https://img.shields.io/github/downloads/OpenListTeam/OpenList/total?color=%239F7AEA&logo=github" alt="Downloads" /></a>
-</div>
+### 1. `drivers/115_open/driver.go` — 导出 SDK Client
 
----
+新增 `GetClient()` 方法，让其他 driver（如 115 Open Transcode）可以获取底层的 115 SDK Client 实例。
 
-- English | [中文](./README_cn.md) | [日本語](./README_ja.md) | [Dutch](./README_nl.md)
+```go
+func (d *Open115) GetClient() *sdk.Client {
+    return d.client
+}
+```
 
-- [Contributing](./CONTRIBUTING.md)
-- [CODE OF CONDUCT](./CODE_OF_CONDUCT.md)
-- [LICENSE](./LICENSE)
+### 2. `drivers/115_open_transcode/` — 新增 115 Open Transcode 驱动
 
-## Disclaimer
+独立驱动，代理已有的 115 Open 存储，视频文件走 115 VideoPlay API 返回 m3u8 转码流。
 
-OpenList is an open-source project independently maintained by the OpenList Team, following the AGPL-3.0 license and committed to maintaining complete code openness and modification transparency.
+**文件**：
+- `meta.go` — 驱动注册，配置字段 `source_path`（指向已有的 115 Open 挂载路径，如 `/115`）
+- `driver.go` — 核心逻辑
 
-We have noticed the emergence of some third-party projects in the community with names similar to this project, such as OpenListApp/OpenListApp, as well as some paid proprietary software using the same or similar naming. To avoid user confusion, we hereby declare:
+**工作方式**：
+- **目录浏览**：透传到 source 115 Open 存储（List/Get 代理）
+- **视频文件**：提取 `pick_code` → 调 `VideoPlay` API → 返回 m3u8 转码流 URL
+- **非视频文件**：透传到 source 存储的直链
+- **VideoPlay 失败时**：自动 fallback 到普通下载直链
 
-- OpenList has no official association with any third-party derivative projects.
+**技术细节**：
+- 115 的 VideoPlay API 返回的 `file_size` 是 string 而非 int，用 `json.Number` 宽松解析
+- `sdk.VideoPlayURL` 包含多个清晰度，默认取 `[0]`（最高清晰度）
+- VideoPlay m3u8 链接设置 **10 分钟缓存过期**（链接内含时间限制 token）
+- Fallback 下载直链设置 **1 分钟缓存过期**（避免错误结果长期缓存）
+- Fallback 通过 `directSourceLink()` **绕过 `op.Link` 缓存**，直接调底层 storage driver 的 `Link()` 方法，确保每次拿到新鲜 URL
 
-- All software, code, and services of this project are maintained by the OpenList Team and are freely available on GitHub.
+**为什么 fallback 要绕过缓存**：
+`op.Link()` 有全局 link cache。如果 115 遇到风控（如 911 账号异常），VideoPlay 失败，fallback 走 `op.Link` 会命中 115 Open storage 已缓存的旧链接（可能已过期）。直接调 `storage.Link()` 可以避免这个问题。
 
-- Project documentation and API services primarily rely on charitable resources provided by Cloudflare. There are currently no paid plans or commercial deployments, and the use of existing features does not involve any costs.
+### 3. `drivers/all.go` — 注册新驱动
 
-We respect the community's rights to free use and derivative development, but we also strongly urge downstream projects:
+```go
+import _ "github.com/OpenListTeam/OpenList/v4/drivers/115_open_transcode"
+```
 
-- Should not use the "OpenList" name for impersonation promotion or commercial gain;
+### 4. `.github/workflows/ghcr.yml` — GHCR CI
 
-- Must not distribute OpenList-based code in a closed-source manner or violate AGPL license terms.
+推送到 GitHub Container Registry 的 CI workflow。
 
-To better maintain healthy ecosystem development, we recommend:
+**镜像地址**：`ghcr.io/liu-nian-tubs/openlist:main`
 
-- Clearly indicate the project source and choose appropriate open-source licenses in accordance with the open-source spirit;
+## 使用方法
 
-- If involving commercial use, please avoid using "OpenList" or any confusing naming as the project name;
+1. 确保已有一个 `115 Open` 存储（如挂载在 `/115`）
+2. OpenList 后台 → 添加存储 → 选择 `115 Open Transcode`
+3. `source_path` 填 `/115`（即已有 115 Open 存储的挂载路径）
+4. 挂载路径填 `/115Trans`（或任意名称）
 
-- If you need to use materials located under OpenListTeam/Logo, you may modify and use them under compliance with the agreement.
-
-Thank you for your support and understanding of the OpenList project.
-
-## Features
-
-- [x] Multiple storages
-  - [x] Local storage
-  - [x] [Aliyundrive](https://www.alipan.com)
-  - [x] OneDrive / Sharepoint ([Global](https://www.microsoft.com/en-us/microsoft-365/onedrive/online-cloud-storage), [CN](https://portal.partner.microsoftonline.cn), DE, US)
-  - [x] [189cloud](https://cloud.189.cn) (Personal, Family)
-  - [x] [GoogleDrive](https://drive.google.com)
-  - [x] [123pan](https://www.123pan.com)
-  - [x] [FTP / SFTP](https://en.wikipedia.org/wiki/File_Transfer_Protocol)
-  - [x] [PikPak](https://www.mypikpak.com)
-  - [x] [S3](https://aws.amazon.com/s3)
-  - [x] [Seafile](https://seafile.com)
-  - [x] [UPYUN Storage Service](https://www.upyun.com/products/file-storage)
-  - [x] [WebDAV](https://en.wikipedia.org/wiki/WebDAV)
-  - [x] Teambition([China](https://www.teambition.com), [International](https://us.teambition.com))
-  - [x] [MediaFire](https://www.mediafire.com)
-  - [x] [Mediatrack](https://www.mediatrack.cn)
-  - [x] [ProtonDrive](https://proton.me/drive)
-  - [x] [139yun](https://yun.139.com) (Personal, Family, Group)
-  - [x] [YandexDisk](https://disk.yandex.com)
-  - [x] [BaiduNetdisk](http://pan.baidu.com)
-  - [x] [Terabox](https://www.terabox.com/main)
-  - [x] [UC](https://drive.uc.cn)
-  - [x] [Quark](https://pan.quark.cn)
-  - [x] [Thunder](https://pan.xunlei.com)
-  - [x] [Lanzou](https://www.lanzou.com)
-  - [x] [ILanzou](https://www.ilanzou.com)
-  - [x] [Google photo](https://photos.google.com)
-  - [x] [Mega.nz](https://mega.nz)
-  - [x] [Baidu photo](https://photo.baidu.com)
-  - [x] [SMB](https://en.wikipedia.org/wiki/Server_Message_Block)
-  - [x] [115](https://115.com)
-  - [X] [Cloudreve](https://cloudreve.org)
-  - [x] [Dropbox](https://www.dropbox.com)
-  - [x] [FeijiPan](https://www.feijipan.com)
-  - [x] [dogecloud](https://www.dogecloud.com/product/oss)
-  - [x] [Azure Blob Storage](https://azure.microsoft.com/products/storage/blobs)
-  - [x] [Chaoxing](https://www.chaoxing.com)
-  - [x] [CNB](https://cnb.cool/)
-  - [x] [Degoo](https://degoo.com)
-  - [x] [Doubao](https://www.doubao.com)
-  - [x] [Febbox](https://www.febbox.com)
-  - [x] [GitHub](https://github.com)
-  - [x] [OpenList](https://github.com/OpenListTeam/OpenList)
-  - [x] [Teldrive](https://github.com/tgdrive/teldrive)
-  - [x] [Weiyun](https://www.weiyun.com)
-- [x] Easy to deploy and out-of-the-box
-- [x] File preview (PDF, markdown, code, plain text, ...)
-- [x] Image preview in gallery mode
-- [x] Video and audio preview, support lyrics and subtitles
-- [x] Office documents preview (docx, pptx, xlsx, ...)
-- [x] `README.md` preview rendering
-- [x] File permalink copy and direct file download
-- [x] Dark mode
-- [x] I18n
-- [x] Protected routes (password protection and authentication)
-- [x] WebDAV
-- [x] Docker Deploy
-- [x] Cloudflare Workers proxy
-- [x] File/Folder package download
-- [x] Web upload(Can allow visitors to upload), delete, mkdir, rename, move and copy
-- [x] Offline download
-- [x] Copy files between two storage
-- [x] Multi-thread downloading acceleration for single-thread download/stream
-
-## Document
-
-- 📘 [Global Site](https://doc.oplist.org)
-- 📚 [Backup Site](https://doc.openlist.team)
-- 🌏 [CN Site](https://doc.oplist.org.cn)
-
-## Demo
-
-- 🌎 [Global Demo](https://demo.oplist.org)
-- 🇨🇳 [CN Demo](https://demo.oplist.org.cn)
-
-## Discussion
-
-Please refer to [*Discussions*](https://github.com/OpenListTeam/OpenList/discussions) for raising general questions, ***Issues* is for bug reports and feature requests only.**
-
-## Sponsor
-
-[![VPS.Town](https://vps.town/static/images/sponsor.png)](https://vps.town "VPS.Town - Trust, Effortlessly. Your Cloud, Reimagined.")
-
-## License
-
-The `OpenList` is open-source software licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt) license.
-
-## Disclaimer
-
-- This project is a free and open-source software designed to facilitate file sharing via net disks, primarily intended to support the downloading and learning of the Go programming language.
-- Please comply with all applicable laws and regulations when using this software. Any form of misuse is strictly prohibited.
-- The software is based on official SDKs or APIs without any modification, disruption, or interference with their behavior.
-- It only performs HTTP 302 redirects or traffic forwarding, and does not intercept, store, or tamper with any user data.
-- This project is not affiliated with any official platform or service provider.
-- The software is provided "as is", without any warranties of any kind, either express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose.
-- The maintainers are not liable for any direct or indirect damages arising from the use of, or inability to use, this software.
-- You are solely responsible for any risks associated with using this software, including but not limited to account bans or download speed limitations.
-- This project is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt) License. Please see the [LICENSE](./LICENSE) file for details.
-
-## Contact Us
-
-- [@GitHub](https://github.com/OpenListTeam)
-- [Telegram Group](https://t.me/OpenListTeam)
-- [Telegram Channel](https://t.me/OpenListOfficial)
-
-## Contributors
-
-We sincerely thank the author [Xhofe](https://github.com/Xhofe) of the original project [AlistGo/alist](https://github.com/AlistGo/alist) and all other contributors.
-
-Thanks goes to these wonderful people:
-
-[![Contributors](https://contrib.rocks/image?repo=OpenListTeam/OpenList)](https://github.com/OpenListTeam/OpenList/graphs/contributors)
+访问 `/115Trans` 下的视频文件时，会自动走 115 转码流播放。

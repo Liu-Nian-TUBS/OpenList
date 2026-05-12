@@ -9,6 +9,7 @@ import (
 	stdpath "path"
 	"strconv"
 	"strings"
+	"time"
 
 	sdk "github.com/OpenListTeam/115-sdk-go"
 	_115_open "github.com/OpenListTeam/OpenList/v4/drivers/115_open"
@@ -17,6 +18,12 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 )
+
+// Link expiration for VideoPlay m3u8 URLs (they contain time-limited tokens)
+var videoPlayLinkExpiration = 10 * time.Minute
+
+// Short expiration for fallback download links (so stale/error results don't persist)
+var fallbackLinkExpiration = 1 * time.Minute
 
 var videoExts = []string{".mp4", ".mkv", ".avi", ".flv", ".wmv", ".ts", ".rmvb", ".webm", ".mov", ".m4v", ".mpg", ".mpeg"}
 
@@ -112,22 +119,19 @@ func (d *Open115Transcode) Link(ctx context.Context, file model.Obj, args model.
 	open115Obj, ok := obj.(*_115_open.Obj)
 	if !ok {
 		log.Printf("[115_open_transcode] obj type=%T not *Obj, fallback", obj)
-		link, _, err := d.sourceLink(ctx, srcPath, args)
-		return link, err
+		return d.directSourceLink(ctx, storage, actualPath, args)
 	}
 
 	pc := open115Obj.Pc
 	if pc == "" {
 		log.Printf("[115_open_transcode] empty pick_code for %s, fallback", name)
-		link, _, err := d.sourceLink(ctx, srcPath, args)
-		return link, err
+		return d.directSourceLink(ctx, storage, actualPath, args)
 	}
 
 	open115Driver, ok := storage.(*_115_open.Open115)
 	if !ok {
 		log.Printf("[115_open_transcode] driver type=%T not *Open115, fallback", storage)
-		link, _, err := d.sourceLink(ctx, srcPath, args)
-		return link, err
+		return d.directSourceLink(ctx, storage, actualPath, args)
 	}
 
 	client := open115Driver.GetClient()
@@ -138,14 +142,12 @@ func (d *Open115Transcode) Link(ctx context.Context, file model.Obj, args model.
 	playResp, err := videoPlayRaw(ctx, client, pc)
 	if err != nil {
 		log.Printf("[115_open_transcode] VideoPlay failed %s pc=%s: %v, fallback", name, pc, err)
-		link, _, err := d.sourceLink(ctx, srcPath, args)
-		return link, err
+		return d.directSourceLink(ctx, storage, actualPath, args)
 	}
 
 	if playResp == nil || len(playResp.VideoURL) == 0 || playResp.VideoURL[0].URL == "" {
 		log.Printf("[115_open_transcode] VideoPlay empty for %s pc=%s, fallback", name, pc)
-		link, _, err := d.sourceLink(ctx, srcPath, args)
-		return link, err
+		return d.directSourceLink(ctx, storage, actualPath, args)
 	}
 
 	log.Printf("[115_open_transcode] VideoPlay success %s pc=%s defs=%d", name, pc, len(playResp.VideoURL))
@@ -154,6 +156,7 @@ func (d *Open115Transcode) Link(ctx context.Context, file model.Obj, args model.
 		Header: http.Header{
 			"User-Agent": []string{"Mozilla/5.0"},
 		},
+		Expiration: &videoPlayLinkExpiration,
 	}, nil
 }
 
@@ -178,6 +181,7 @@ func (d *Open115Transcode) wrapObj(obj model.Obj, srcPath string) model.Obj {
 	}
 }
 
+// sourceLink uses op.Link which goes through the link cache (used for non-video files).
 func (d *Open115Transcode) sourceLink(ctx context.Context, srcPath string, args model.LinkArgs) (*model.Link, model.Obj, error) {
 	storage, actualPath, err := op.GetStorageAndActualPath(srcPath)
 	if err != nil {
@@ -187,6 +191,26 @@ func (d *Open115Transcode) sourceLink(ctx context.Context, srcPath string, args 
 		Header: args.Header,
 		Type:   args.Type,
 	})
+}
+
+// directSourceLink calls the underlying storage driver's Link() directly,
+// bypassing op.Link's cache. This is used for video fallback so we always get
+// a fresh download URL instead of a potentially stale cached one.
+func (d *Open115Transcode) directSourceLink(ctx context.Context, storage driver.Driver, actualPath string, args model.LinkArgs) (*model.Link, error) {
+	file, err := op.Get(ctx, storage, actualPath)
+	if err != nil {
+		return nil, fmt.Errorf("get file for fallback failed: %w", err)
+	}
+	link, err := storage.Link(ctx, file, model.LinkArgs{
+		Header: args.Header,
+		Type:   args.Type,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fallback link failed: %w", err)
+	}
+	// Set short expiration so stale fallback links don't persist in cache
+	link.Expiration = &fallbackLinkExpiration
+	return link, nil
 }
 
 func isVideo(name string) bool {
