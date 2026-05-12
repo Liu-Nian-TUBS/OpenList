@@ -19,8 +19,9 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 )
 
-// Link expiration for VideoPlay m3u8 URLs (they contain time-limited tokens)
-var videoPlayLinkExpiration = 10 * time.Minute
+// Link expiration for VideoPlay m3u8 URLs — long TTL since the player
+// should fetch the m3u8 once and then hit the CDN directly for .ts segments.
+var videoPlayLinkExpiration = 2 * time.Hour
 
 // Short expiration for fallback download links (so stale/error results don't persist)
 var fallbackLinkExpiration = 1 * time.Minute
@@ -73,6 +74,16 @@ func (d *Open115Transcode) Get(ctx context.Context, path string) (model.Obj, err
 	srcPath := d.srcPath(path)
 	obj, err := fs.Get(ctx, srcPath, &fs.GetArgs{NoLog: true})
 	if err != nil {
+		// If path ends with .m3u8, try finding the original video file
+		if strings.HasSuffix(strings.ToLower(path), ".m3u8") {
+			basePath := srcPath[:len(srcPath)-5] // strip .m3u8
+			for _, ext := range videoExts {
+				obj2, err2 := fs.Get(ctx, basePath+ext, &fs.GetArgs{NoLog: true})
+				if err2 == nil {
+					return d.wrapObj(obj2, basePath+ext), nil
+				}
+			}
+		}
 		return nil, err
 	}
 	return d.wrapObj(obj, srcPath), nil
@@ -99,8 +110,8 @@ func (d *Open115Transcode) Link(ctx context.Context, file model.Obj, args model.
 	srcPath := file.GetPath()
 	name := file.GetName()
 
-	// Non-video files: pass through to source storage
-	if !isVideo(name) {
+	// Non-video files (and not .m3u8 rewritten ones): pass through to source storage
+	if !isVideo(name) && !strings.HasSuffix(strings.ToLower(name), ".m3u8") {
 		link, _, err := d.sourceLink(ctx, srcPath, args)
 		return link, err
 	}
@@ -172,9 +183,37 @@ func (d *Open115Transcode) srcPath(path string) string {
 	return stdpath.Join(d.SourcePath, path)
 }
 
+// videoName rewrites video file extensions to .m3u8 so players treat them
+// as HLS streams and fetch .ts segments directly from the CDN instead of
+// repeatedly hitting OpenList for 302 redirects.
+func videoName(name string) string {
+	lower := strings.ToLower(name)
+	for _, ext := range videoExts {
+		if strings.HasSuffix(lower, ext) {
+			return name[:len(name)-len(ext)] + ".m3u8"
+		}
+	}
+	return name
+}
+
+// originalVideoName reverses the .m3u8 rewrite — tries each video extension
+// against the source storage until it finds the real file.
+func (d *Open115Transcode) originalVideoName(ctx context.Context, m3u8Name string) string {
+	if !strings.HasSuffix(strings.ToLower(m3u8Name), ".m3u8") {
+		return m3u8Name
+	}
+	base := m3u8Name[:len(m3u8Name)-5] // strip .m3u8
+	return base                         // caller will try to resolve
+}
+
 func (d *Open115Transcode) wrapObj(obj model.Obj, srcPath string) model.Obj {
+	name := obj.GetName()
+	if !obj.IsDir() && isVideo(name) {
+		name = videoName(name)
+		// srcPath keeps the original path for source resolution
+	}
 	return &model.Object{
-		Name:     obj.GetName(),
+		Name:     name,
 		Path:     srcPath,
 		Size:     obj.GetSize(),
 		Modified: obj.ModTime(),
